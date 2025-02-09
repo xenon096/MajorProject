@@ -11,15 +11,25 @@ from tensorflow.keras.applications import VGG16
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from PIL import Image
 
+# Initialize session state for trained model
+if "trained_model" not in st.session_state:
+    st.session_state["trained_model"] = None
+
 global model, train_dir, class_labels
 train_dir = "./extracted_dataset"
 class_labels = []
+
+@st.cache_resource
+def get_model(model_type, input_shape, num_classes):
+    if model_type == 'CNN':
+        return create_cnn_model(input_shape, num_classes)
+    else:
+        return create_vgg16_model(input_shape, num_classes)
 
 def load_dataset():
     global train_dir, class_labels
     uploaded_file = st.file_uploader("Upload a ZIP file containing the dataset", type=["zip"])
     if uploaded_file is not None:
-        # Ensure the directory is cleared before extracting
         if os.path.exists(train_dir):
             shutil.rmtree(train_dir)
         os.makedirs(train_dir, exist_ok=True)
@@ -30,17 +40,27 @@ def load_dataset():
         
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(train_dir)
-        os.remove(zip_path)  # Remove zip file after extraction
+        os.remove(zip_path)
         
-        class_labels = os.listdir(train_dir)
-        st.success("Dataset extracted successfully!")
-        st.write(f"Classes found: {', '.join(class_labels)}")
+        # Check if extracted dataset is nested inside a single folder
+        subfolders = [d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))]
+        if len(subfolders) == 1:
+            train_dir = os.path.join(train_dir, subfolders[0])
+        
+        # Identify subfolders (classes) inside the extracted dataset
+        class_labels = [d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))]
+        
+        if class_labels:
+            st.success("Dataset extracted successfully!")
+            st.write(f"Classes found: {', '.join(class_labels)}")
+        else:
+            st.error("No class subfolders found. Please ensure the dataset is structured correctly.")
     else:
         st.error("Please upload a valid ZIP file.")
 
 def preprocess_data():
     global train_dir, class_labels
-    if not os.path.exists(train_dir):
+    if not os.path.exists(train_dir) or not class_labels:
         st.error("Please upload a dataset first.")
         return None, None
 
@@ -86,8 +106,8 @@ def create_vgg16_model(input_shape, num_classes):
     return model
 
 def train_model(model_type):
-    global model, train_dir, class_labels
-    if not os.path.exists(train_dir):
+    global train_dir, class_labels
+    if not os.path.exists(train_dir) or not class_labels:
         st.error("Please preprocess data first.")
         return
     
@@ -96,9 +116,9 @@ def train_model(model_type):
         return
     
     num_classes = len(class_labels)
-    model = create_cnn_model((150, 150, 3), num_classes) if model_type == 'CNN' else create_vgg16_model((150, 150, 3), num_classes)
+    st.session_state["trained_model"] = get_model(model_type, (150, 150, 3), num_classes)
     
-    history = model.fit(train_generator, epochs=2, validation_data=validation_generator)
+    history = st.session_state["trained_model"].fit(train_generator, epochs=2, validation_data=validation_generator)
     st.success("Model Training Completed.")
     st.write(f"Final Accuracy: {history.history['accuracy'][-1]:.4f}")
     plot_history(history)
@@ -118,12 +138,11 @@ def plot_history(history):
     st.pyplot(fig)
 
 def upload_and_predict():
-    global model, class_labels
-    if model is None:
+    if st.session_state["trained_model"] is None:
         st.error("Model is not trained yet. Please train the model first.")
         return
     
-    uploaded_file = st.file_uploader("Choose an image...")
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file is not None:
         img = Image.open(uploaded_file)
         st.image(img, caption='Uploaded Image', use_column_width=True)
@@ -132,8 +151,8 @@ def upload_and_predict():
         img_array = np.array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
         
-        prediction = model.predict(img_array)
-        predicted_class = class_labels[np.argmax(prediction)]
+        prediction = st.session_state["trained_model"].predict(img_array)
+        predicted_class = st.session_state["class_labels"][np.argmax(prediction)]
         
         st.success(f"Predicted Class: {predicted_class}")
 
